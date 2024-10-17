@@ -75,6 +75,8 @@ class AudioGradCAM:
         self.compute_input_gradient = compute_input_gradient
         self.uses_gradients = uses_gradients
         self.activations_and_grads = ActivationsAndGradients(self.model, target_layers)
+        self.waveform = None
+        self.sr = None
 
     def get_cam_weights(self, input_tensor: torch.Tensor, target_layer: torch.nn.Module,
                         targets: List[torch.nn.Module], activations: torch.Tensor,
@@ -121,6 +123,8 @@ class AudioGradCAM:
     def forward(self, input_tensor: torch.Tensor,
                 targets: Optional[List[torch.nn.Module]] = None) -> np.ndarray:
         input_tensor = input_tensor.to(self.device)
+        self.waveform = input_tensor.cpu().numpy().squeeze()
+        self.sr = 16000
         if self.compute_input_gradient:
             input_tensor.requires_grad_()
             
@@ -153,33 +157,177 @@ class AudioGradCAM:
 
         # ReLU를 적용하여 음수 값을 제거합니다 (선택적).
         # cam = np.maximum(cam, 0)
-        print("cam_relu : ", cam)
+        # print("cam_relu : ", cam)
         # CAM을 시각화합니다 (선택적).
-        self.visualize_cam(cam)
-        
-        return self.normalize_cam(cam)
 
+        normalized_cam = self.normalize_cam(cam)
+        self.visualize_cam(cam, normalized_cam)
+        
+        return normalized_cam
     def normalize_cam(self, cam):
-        return (cam - cam.min()) / (cam.max() - cam.min())
+        positive_mask = cam > 0
+        negative_mask = cam < 0
+        
+        normalized_cam = np.zeros_like(cam)
+        
+        if np.any(positive_mask):
+            pos_max = cam[positive_mask].max()
+            normalized_cam[positive_mask] = cam[positive_mask] / pos_max
+        
+        if np.any(negative_mask):
+            neg_min = cam[negative_mask].min()
+            normalized_cam[negative_mask] = -cam[negative_mask] / neg_min
+        
+        return normalized_cam
+    # def normalize_cam(self, cam):
+        
+    #     cam_min, cam_max = cam.min(), cam.max()
+        
+    #     # 음수 값 처리
+    #     if cam_max <= 0:
+    #         normalized_cam = (cam + abs(cam_min)) / (abs(cam_min) - cam_min)
 
-    def visualize_cam(self, cam):
-        plt.figure(figsize=(10, 2))
-        
-        # 데이터의 절대값 최대치를 찾아 대칭적인 색상 스케일 생성
-        vmax = np.max(np.abs(cam))
+    #     else:
+    #     # 양수 값이 존재하는 경우
+    #         positive_mask = cam > 0
+    #         negative_mask = cam <= 0
+            
+    #         normalized_cam = np.zeros_like(cam)
+            
+    #         # 양수 값 정규화 (min-max 정규화)
+    #         if np.any(positive_mask):
+    #             positive_min, positive_max = cam[positive_mask].min(), cam[positive_mask].max()
+    #             normalized_cam[positive_mask] = (cam[positive_mask] - positive_min) / (positive_max - positive_min)
+            
+    #         # 음수 값 정규화 (첫 번째 방식과 유사한 정규화)
+    #         if np.any(negative_mask):
+    #             negative_min = cam[negative_mask].min()
+    #             normalized_cam[negative_mask] = (cam[negative_mask] + abs(negative_min)) / (abs(negative_min) - negative_min)
+    #     return normalized_cam
+    
+    # 3번째 시각화
+    # def visualize_cam(self, cam, normalized_cam):
+    #     if self.waveform is None or self.sr is None:
+    #         raise ValueError("Waveform and sample rate are not set. Please run forward() first.")
+
+    #     # Get Grad-CAM values
+    #     grad_cam_values = cam.squeeze()
+    #     normalized_grad_cam_values = normalized_cam.squeeze()
+
+    #     # Calculate frame times
+    #     num_frames = len(grad_cam_values)
+    #     duration = len(self.waveform) / self.sr
+    #     frame_times = np.linspace(0, duration, num_frames)
+
+    #     # Create the figure
+    #     fig, (ax1, ax2, ax3) = plt.subplots(3, 1, figsize=(12, 12), gridspec_kw={'height_ratios': [2, 1, 1]})
+
+    #     # Plot the waveform
+    #     librosa.display.waveshow(self.waveform, sr=self.sr, ax=ax1)
+    #     ax1.set_title('Waveform')
+    #     ax1.set_xlabel('Time (s)')
+    #     ax1.set_ylabel('Amplitude')
+
+    #     # Plot Grad-CAM heatmap
+    #     vmax = np.max(np.abs(grad_cam_values))
+    #     norm = TwoSlopeNorm(vmin=-vmax, vcenter=0, vmax=vmax)
+    #     im = ax2.imshow(grad_cam_values[np.newaxis, :], cmap='RdBu_r', norm=norm, 
+    #                     aspect='auto', extent=[0, duration, 0, 1])
+    #     ax2.set_title('Grad-CAM Heatmap')
+    #     ax2.set_xlabel('Time (s)')
+    #     ax2.set_ylabel('Channels')
+    #     plt.colorbar(im, ax=ax2, orientation='vertical', label='Grad-CAM Score')
+
+    #     # Plot normalized Grad-CAM scores as a bar chart with flipped negative values
+    #     colors = ['blue' if v < 0 else 'red' for v in grad_cam_values]
+    #     flipped_normalized_values = np.where(grad_cam_values < 0, -normalized_grad_cam_values, normalized_grad_cam_values)
+    #     ax3.bar(frame_times, flipped_normalized_values, width=duration/num_frames, align='edge', color=colors, alpha=0.7)
+    #     ax3.set_title('Normalized Grad-CAM Scores (Negative Values Flipped)')
+    #     ax3.set_xlabel('Time (s)')
+    #     ax3.set_ylabel('Score')
+    #     ax3.set_ylim(0, 1)  # y축 범위를 -1에서 1로 설정
+    #     ax3.axhline(y=0, color='k', linestyle='--', linewidth=0.5)  # 0 기준선 추가
+
+    #     # Adjust layout and display
+    #     plt.tight_layout()
+    #     plt.show()
+
+    #     # Display audio player
+    #     audio_widget = Audio(self.waveform, rate=self.sr)
+    #     display(audio_widget)
+    
+    def visualize_cam(self, cam, normalized_cam):
+        if self.waveform is None or self.sr is None:
+            raise ValueError("Waveform and sample rate are not set. Please run forward() first.")
+
+        # Get Grad-CAM values
+        grad_cam_values = cam.squeeze()
+        normalized_grad_cam_values = normalized_cam.squeeze()
+
+        # Calculate frame times
+        num_frames = len(grad_cam_values)
+        duration = len(self.waveform) / self.sr
+        frame_times = np.linspace(0, duration, num_frames)
+
+        # Create the figure
+        fig, (ax1, ax2, ax3) = plt.subplots(3, 1, figsize=(12, 12), gridspec_kw={'height_ratios': [2, 1, 1]})
+
+        # Plot the waveform
+        librosa.display.waveshow(self.waveform, sr=self.sr, ax=ax1)
+        ax1.set_title('Waveform')
+        ax1.set_xlabel('Time (s)')
+        ax1.set_ylabel('Amplitude')
+
+        # Plot Grad-CAM heatmap
+        vmax = np.max(np.abs(grad_cam_values))
         norm = TwoSlopeNorm(vmin=-vmax, vcenter=0, vmax=vmax)
-        # 히트맵 그리기
-        im = plt.imshow(cam, cmap='RdBu_r', norm=norm, interpolation='nearest', aspect='auto')
-        
-        # 컬러바 추가
-        cbar = plt.colorbar(im)
-        cbar.set_label('Grad-CAM Score')
-        
-        plt.title('Grad-CAM Heatmap')
-        plt.xlabel('Time Steps')
-        plt.ylabel('Channels')
+        im = ax2.imshow(grad_cam_values[np.newaxis, :], cmap='RdBu_r', norm=norm, 
+                        aspect='auto', extent=[0, duration, 0, 1])
+        ax2.set_title('Grad-CAM Heatmap')
+        ax2.set_xlabel('Time (s)')
+        ax2.set_ylabel('Channels')
+        plt.colorbar(im, ax=ax2, orientation='vertical', label='Grad-CAM Score')
+
+        # Plot normalized Grad-CAM scores as a bar chart with colors based on original values
+        colors = ['blue' if v < 0 else 'red' for v in cam.squeeze()]
+        ax3.bar(frame_times, normalized_cam.squeeze(), width=duration/num_frames, align='edge', color=colors, alpha=0.7)
+        ax3.set_title('Normalized Grad-CAM Scores')
+        ax3.set_xlabel('Time (s)')
+        ax3.set_ylabel('Score')
+        ax3.set_ylim(-1, 1)
+        ax3.axhline(y=0, color='k', linestyle='--', linewidth=0.5)  # 0 기준선 추가
+        # colors = ['blue' if v < 0 else 'red' for v in grad_cam_values]
+        # ax3.bar(frame_times, normalized_grad_cam_values, width=duration/num_frames, align='edge', color=colors, alpha=0.7)
+        # ax3.set_title('Normalized Grad-CAM Scores')
+        # ax3.set_xlabel('Time (s)')
+        # ax3.set_ylabel('Score')
+        # ax3.set_ylim(0, 1)
+
+        # Adjust layout and display
         plt.tight_layout()
         plt.show()
+
+        # Display audio player
+        audio_widget = Audio(self.waveform, rate=self.sr)
+        display(audio_widget)
+    # def visualize_cam(self, cam):
+    #     plt.figure(figsize=(10, 2))
+        
+    #     # 데이터의 절대값 최대치를 찾아 대칭적인 색상 스케일 생성
+    #     vmax = np.max(np.abs(cam))
+    #     norm = TwoSlopeNorm(vmin=-vmax, vcenter=0, vmax=vmax)
+    #     # 히트맵 그리기
+    #     im = plt.imshow(cam, cmap='RdBu_r', norm=norm, interpolation='nearest', aspect='auto')
+        
+    #     # 컬러바 추가
+    #     cbar = plt.colorbar(im)
+    #     cbar.set_label('Grad-CAM Score')
+        
+    #     plt.title('Grad-CAM Heatmap')
+    #     plt.xlabel('Time Steps')
+    #     plt.ylabel('Channels')
+    #     plt.tight_layout()
+    #     plt.show()
 
     def __call__(self, input_tensor: torch.Tensor,
                  targets: Optional[List[torch.nn.Module]] = None) -> np.ndarray:
@@ -250,7 +398,7 @@ def visualize_cam(cam, audio_path):
                     aspect='auto', extent=[0, duration, 0, 1])
     ax2.set_title('Grad-CAM Heatmap')
     ax2.set_xlabel('Time (s)')
-    ax2.set_ylabel('Channels')
+    ax2.set_ylabel('')
     plt.colorbar(im, ax=ax2, orientation='vertical', label='Grad-CAM Score')
 
     # Plot Grad-CAM scores as a bar chart
